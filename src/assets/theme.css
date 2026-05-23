@@ -1,0 +1,41 @@
+/* 静态配色；--surface / --bubble-bg / --settings-* 由 theme.ts 动态写入 */
+:root,
+html.theme-dark,
+.theme-dark {
+  color-scheme: dark;
+  --shell-bg: rgb(20, 20, 26);
+  --surface: rgb(36, 36, 46);
+  --bubble-bg: rgba(30, 30, 40, 0.92);
+  --input-bg: rgba(24, 24, 32, 0.88);
+  --settings-panel-bg: #1c1c24;
+  --settings-input-bg: #14141a;
+  --text: #e8e8ef;
+  --muted: #9a9aad;
+  --accent: #22d3ee;
+  --border: rgba(255, 255, 255, 0.12);
+  --btn-ghost-hover: rgba(255, 255, 255, 0.1);
+  --hint-code-bg: rgba(34, 211, 238, 0.14);
+  --err: #fca5a5;
+  --err-bg: rgba(248, 113, 113, 0.14);
+  --overlay-bg: rgba(0, 0, 0, 0.5);
+}
+
+html.theme-light,
+.theme-light {
+  color-scheme: light;
+  --shell-bg: rgb(245, 245, 248);
+  --surface: rgb(255, 255, 255);
+  --bubble-bg: rgba(255, 255, 255, 0.92);
+  --input-bg: rgba(248, 248, 252, 0.88);
+  --settings-panel-bg: #ffffff;
+  --settings-input-bg: #f5f5fa;
+  --text: #1a1a22;
+  --muted: #5c5c6e;
+  --accent: #0891b2;
+  --border: rgba(0, 0, 0, 0.12);
+  --btn-ghost-hover: rgba(0, 0, 0, 0.07);
+  --hint-code-bg: rgba(8, 145, 178, 0.12);
+  --err: #dc2626;
+  --err-bg: rgba(220, 38, 38, 0.1);
+  --overlay-bg: rgba(0, 0, 0, 0.35);
+}

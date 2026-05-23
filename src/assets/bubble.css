@@ -1,0 +1,16 @@
+@import "./theme.css";
+
+html.bubble-root,
+body.bubble-root {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+body.bubble-root #app {
+  width: 100vw;
+  min-height: 0;
+  height: auto;
+  background: transparent;
+}

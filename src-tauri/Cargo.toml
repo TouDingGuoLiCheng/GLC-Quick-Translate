@@ -1,0 +1,38 @@
+[package]
+name = "quick-translate"
+version = "0.1.0"
+description = "GLC Quick Translate"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "quick_translate_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+urlencoding = "2"
+arboard = "3"
+ureq = { version = "2", default-features = false, features = ["tls", "cookies"] }
+encoding_rs = "0.8"
+rfd = "0.15"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

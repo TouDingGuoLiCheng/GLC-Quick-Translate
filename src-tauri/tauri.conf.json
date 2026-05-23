@@ -1,0 +1,83 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GLC Quick Translate",
+  "version": "0.1.0",
+  "identifier": "com.guolicheng.quick-translate",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1422",
+    "beforeBuildCommand": "npm run prepare:python && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "GLC Quick Translate",
+        "create": false,
+        "width": 300,
+        "height": 400,
+        "minWidth": 280,
+        "minHeight": 320,
+        "resizable": true,
+        "center": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": false
+      },
+      {
+        "label": "translate-scraper",
+        "title": "翻译抓取",
+        "url": "about:blank",
+        "width": 900,
+        "height": 700,
+        "create": false,
+        "visible": false,
+        "decorations": false,
+        "skipTaskbar": true,
+        "focus": false
+      },
+      {
+        "label": "translate-bubble",
+        "title": "",
+        "url": "bubble.html",
+        "width": 320,
+        "height": 152,
+        "create": false,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/**",
+          "$APPLOCALDATA/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "resources/capture_clipboard.py": "resources/capture_clipboard.py",
+      "bundled-python/": "python/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

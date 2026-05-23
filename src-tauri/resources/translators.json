@@ -1,0 +1,25 @@
+{
+  "version": 4,
+  "providers": [
+    {
+      "id": "baidu",
+      "name": "百度翻译",
+      "enabled": true,
+      "urlTemplate": "https://fanyi.baidu.com/mtpe-individual/transText?ext_channel=BingSearch#/",
+      "resultSelector": "",
+      "waitMs": 2500,
+      "pollIntervalMs": 300,
+      "maxPollAttempts": 36
+    },
+    {
+      "id": "bing",
+      "name": "必应翻译",
+      "enabled": true,
+      "urlTemplate": "https://cn.bing.com/translator?setmkt=zh-cn&setlang=zh-cn",
+      "resultSelector": "#tta_output_ta",
+      "waitMs": 3500,
+      "pollIntervalMs": 250,
+      "maxPollAttempts": 32
+    }
+  ]
+}
