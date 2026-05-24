@@ -25,8 +25,13 @@ pub struct TranslateSettings {
     pub hotkey: String,
     /// 翻译并用译文替换选中内容
     pub replace_hotkey: String,
+    /// 气泡展示译文后，用译文替换原选中内容
+    pub bubble_replace_hotkey: String,
     pub restore_clipboard: bool,
     pub copy_delay_ms: u64,
+    /// 上一条成功翻译记录超过该秒数后，空选时若仍读到其原文/译文且复制未更新，则提示空选（非等待时间）
+    #[serde(default = "default_translate_clipboard_guard_sec")]
+    pub translate_clipboard_guard_sec: u64,
     pub target_lang: String,
     pub primary_provider: String,
     pub fallback_enabled: bool,
@@ -63,6 +68,10 @@ fn default_history_max() -> u32 {
     200
 }
 
+fn default_translate_clipboard_guard_sec() -> u64 {
+    1
+}
+
 impl Default for BubbleBgLayout {
     fn default() -> Self {
         Self {
@@ -79,8 +88,10 @@ impl Default for TranslateSettings {
             enabled: true,
             hotkey: "Ctrl+T".to_string(),
             replace_hotkey: "Ctrl+Shift+T".to_string(),
+            bubble_replace_hotkey: "Shift+Enter".to_string(),
             restore_clipboard: true,
             copy_delay_ms: 200,
+            translate_clipboard_guard_sec: default_translate_clipboard_guard_sec(),
             target_lang: "auto".to_string(),
             primary_provider: "baidu".to_string(),
             fallback_enabled: true,
@@ -175,7 +186,13 @@ pub fn normalize_settings(mut s: TranslateSettings) -> TranslateSettings {
     s.bubble_text_color = normalize_optional_hex_color(&s.bubble_text_color);
     s.bubble_muted_color = normalize_optional_hex_color(&s.bubble_muted_color);
     s.history_max_count = clamp_history_max(s.history_max_count);
+    s.translate_clipboard_guard_sec =
+        clamp_translate_clipboard_guard_sec(s.translate_clipboard_guard_sec);
     s
+}
+
+pub fn clamp_translate_clipboard_guard_sec(sec: u64) -> u64 {
+    sec.clamp(0, 60)
 }
 
 pub fn config_path() -> PathBuf {

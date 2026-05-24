@@ -1,4 +1,5 @@
 use crate::appearance;
+use crate::selection::TargetHwnd;
 use crate::settings::{self, TranslateSettings};
 use crate::window_layout::monitor_work_area_near_cursor;
 use serde::Serialize;
@@ -7,7 +8,8 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use crate::window_util;
-use tauri::{AppHandle, Emitter, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 const BUBBLE_LABEL: &str = "translate-bubble";
 const BUBBLE_WIDTH: u32 = 320;
@@ -21,6 +23,59 @@ const EDGE_MARGIN: i32 = 12;
 static BUBBLE_HIDE_GEN: AtomicU64 = AtomicU64::new(0);
 /// 同一次翻译流程内固定气泡左上角，避免加载态与结果态位置跳动
 static BUBBLE_ANCHOR: Mutex<Option<BubbleAnchor>> = Mutex::new(None);
+
+static BUBBLE_REPLACE_ACCEL: Mutex<Option<String>> = Mutex::new(None);
+
+/// 气泡模式翻译成功后，可供「气泡内替换」热键写回焦点控件
+struct BubbleReplaceSession {
+    target: TargetHwnd,
+    translated: String,
+}
+
+static BUBBLE_REPLACE_SESSION: Mutex<Option<BubbleReplaceSession>> = Mutex::new(None);
+
+pub fn set_replace_session(target: TargetHwnd, translated: String) {
+    if !target.is_valid() || translated.trim().is_empty() {
+        clear_replace_session();
+        return;
+    }
+    if let Ok(mut guard) = BUBBLE_REPLACE_SESSION.lock() {
+        *guard = Some(BubbleReplaceSession {
+            target,
+            translated,
+        });
+    }
+}
+
+pub fn clear_replace_session() {
+    if let Ok(mut guard) = BUBBLE_REPLACE_SESSION.lock() {
+        *guard = None;
+    }
+}
+
+pub fn take_replace_session() -> Option<(TargetHwnd, String)> {
+    let mut guard = BUBBLE_REPLACE_SESSION.lock().ok()?;
+    guard.take().map(|s| (s.target, s.translated))
+}
+
+pub fn has_replace_session() -> bool {
+    BUBBLE_REPLACE_SESSION
+        .lock()
+        .ok()
+        .is_some_and(|g| g.is_some())
+}
+
+/// 读取当前译文会话（不消费），供气泡内替换使用。
+pub fn peek_replace_session() -> Option<(TargetHwnd, String)> {
+    let guard = BUBBLE_REPLACE_SESSION.lock().ok()?;
+    guard
+        .as_ref()
+        .map(|s| (s.target, s.translated.clone()))
+}
+
+pub fn is_visible(app: &AppHandle) -> bool {
+    app.get_webview_window(BUBBLE_LABEL).is_some()
+}
 
 #[derive(Clone, Copy)]
 struct BubbleAnchor {
@@ -115,8 +170,48 @@ fn clear_anchor() {
 
 pub fn hide(app: &AppHandle) {
     BUBBLE_HIDE_GEN.fetch_add(1, Ordering::SeqCst);
+    let _ = unregister_bubble_replace_hotkey(app);
     clear_anchor();
+    clear_replace_session();
     window_util::close_webview_window(app, BUBBLE_LABEL);
+}
+
+/// 气泡显示期间临时注册「气泡内替换」热键；关闭气泡后注销。
+pub fn register_bubble_replace_hotkey(
+    app: &AppHandle,
+    settings: &TranslateSettings,
+) -> Result<(), String> {
+    if !settings.enabled {
+        return Ok(());
+    }
+    let accel = settings.bubble_replace_hotkey.trim();
+    if accel.is_empty() {
+        return Ok(());
+    }
+    unregister_bubble_replace_hotkey(app)?;
+    let shortcut = accel
+        .parse::<tauri_plugin_global_shortcut::Shortcut>()
+        .map_err(|e| format!("无效气泡内替换快捷键 {accel}: {e}"))?;
+    app.global_shortcut()
+        .register(shortcut)
+        .map_err(|e| format!("注册气泡内替换快捷键 {accel} 失败: {e}"))?;
+    if let Ok(mut guard) = BUBBLE_REPLACE_ACCEL.lock() {
+        *guard = Some(accel.to_string());
+    }
+    Ok(())
+}
+
+pub fn unregister_bubble_replace_hotkey(app: &AppHandle) -> Result<(), String> {
+    let accel = BUBBLE_REPLACE_ACCEL
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+    if let Some(accel) = accel {
+        if let Ok(shortcut) = accel.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app.global_shortcut().unregister(shortcut);
+        }
+    }
+    Ok(())
 }
 
 pub fn present(
@@ -138,6 +233,12 @@ pub fn present(
     window
         .emit("bubble:update", emit)
         .map_err(|e| format!("推送气泡状态失败: {e}"))?;
+
+    if payload.phase == "success" {
+        register_bubble_replace_hotkey(app, settings)?;
+    } else {
+        let _ = unregister_bubble_replace_hotkey(app);
+    }
 
     Ok(())
 }

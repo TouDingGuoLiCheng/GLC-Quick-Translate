@@ -167,6 +167,8 @@ export function normalizeSettings(raw: TranslateSettings): TranslateSettings {
     bubbleMutedColor: raw.bubbleMutedColor?.trim() ?? "",
     historyMaxCount: raw.historyMaxCount ?? 200,
     launchAtStartup: raw.launchAtStartup ?? false,
+    translateClipboardGuardSec: raw.translateClipboardGuardSec ?? 1,
+    bubbleReplaceHotkey: raw.bubbleReplaceHotkey?.trim() || "Shift+Enter",
   };
 }
 

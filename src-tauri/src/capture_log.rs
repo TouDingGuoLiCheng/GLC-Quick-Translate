@@ -79,6 +79,18 @@ pub fn append(block: &str) {
     }
 }
 
+/// 清空所有取词诊断日志文件（安装目录 + AppData 备用）
+pub fn clear_all_logs() -> Result<usize, String> {
+    let mut cleared = 0usize;
+    for path in all_log_files() {
+        if path.is_file() {
+            std::fs::write(&path, "").map_err(|e| format!("清空日志失败 {}: {e}", path.display()))?;
+            cleared += 1;
+        }
+    }
+    Ok(cleared)
+}
+
 pub fn open_logs_folder() -> Result<String, String> {
     let dir = install_log_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建日志目录失败: {e}"))?;

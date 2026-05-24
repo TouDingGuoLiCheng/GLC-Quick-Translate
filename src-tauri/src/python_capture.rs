@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 const CAPTURE_SCRIPT_ENV: &str = "QT_CAPTURE_SCRIPT";
 const CLIPBOARD_BACKUP_ENV: &str = "QT_CLIPBOARD_BACKUP";
+const CLIPBOARD_BACKUP_SEQ_ENV: &str = "QT_CLIPBOARD_BACKUP_SEQ";
+const COPY_MAX_WAIT_ENV: &str = "QT_COPY_MAX_WAIT_SEC";
 
 /// Windows：子进程不弹出 cmd 窗口（避免替换/取词时闪终端、抢焦点）
 #[cfg(windows)]
@@ -50,11 +52,53 @@ struct CaptureRunContext {
     delay_ms: u64,
     restore: bool,
     clipboard_backup: Option<String>,
+    clipboard_backup_seq: Option<u32>,
+    clipboard_only: bool,
+    run_mode: &'static str,
+    translate_clipboard_guard_sec: u64,
 }
 
 fn is_no_selection_message(msg: &str) -> bool {
     let m = msg.trim();
-    m.contains("请先选中") || m.contains("empty-clipboard") || m.contains("无文本") || m.contains("未选中")
+    (m.contains("请先选中")
+        || m.contains("empty-clipboard")
+        || m.contains("无文本")
+        || m.contains("未选中"))
+        && !m.contains("复制失败")
+}
+
+fn is_copy_failure_message(msg: &str) -> bool {
+    msg.contains("复制失败") || msg.contains("copy-timeout-stale")
+}
+
+/// 根据 Python diagnostics 中的复制前后剪贴板序号判断是否复制成功。
+fn clipboard_sequence_changed_from_diag(diagnostics: &Option<serde_json::Value>) -> bool {
+    let Some(diag) = diagnostics.as_ref() else {
+        return false;
+    };
+    let before = diag
+        .get("clipboardBackupSeq")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    let after = diag
+        .get("clipboardSeqAfter")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    match (before, after) {
+        (Some(b), Some(a)) => a != b,
+        _ => false,
+    }
+}
+
+fn normalize_python_capture_error(raw: &str) -> String {
+    let m = raw.trim();
+    if m.contains("复制失败") {
+        return m.to_string();
+    }
+    if m.contains("copy-timeout-stale") || m.contains("剪贴板仍未更新") {
+        return crate::clipboard_util::MSG_COPY_FAILED_STALE.to_string();
+    }
+    m.to_string()
 }
 
 pub fn capture_via_python(
@@ -69,14 +113,15 @@ pub fn capture_via_python(
             text: None,
             error: Some(e),
             restored_clipboard: false,
+            clipboard_sequence_changed: false,
             duration_ms: started.elapsed().as_millis() as u64,
         };
     }
 
     let clipboard_backup = read_system_clipboard();
+    let clipboard_backup_seq = crate::clipboard_util::clipboard_sequence_number();
     let copy_delay = settings.copy_delay_ms.max(80);
 
-    // 纯 Python 取词：pyautogui Ctrl+C + pyperclip（不使用 Rust 模拟复制，避免多余子进程/终端）
     let script = match capture_script_path() {
         Ok(p) => p,
         Err(e) => {
@@ -86,6 +131,7 @@ pub fn capture_via_python(
                 text: None,
                 error: Some(format!("{e}\n{}", capture_log::log_file_hint_block())),
                 restored_clipboard: false,
+                clipboard_sequence_changed: false,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
         }
@@ -100,6 +146,7 @@ pub fn capture_via_python(
                 text: None,
                 error: Some(format!("{e}\n{}", capture_log::log_file_hint_block())),
                 restored_clipboard: false,
+                clipboard_sequence_changed: false,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
         }
@@ -115,6 +162,9 @@ pub fn capture_via_python(
     let _ = crate::selection::focus_target_for_copy(target);
     thread::sleep(Duration::from_millis(80));
 
+    let clipboard_only = false;
+    let run_mode = "python_only_pyautogui";
+
     let ctx = CaptureRunContext {
         python_home,
         embedded_python,
@@ -127,6 +177,10 @@ pub fn capture_via_python(
         delay_ms: copy_delay,
         restore: settings.restore_clipboard,
         clipboard_backup,
+        clipboard_backup_seq,
+        clipboard_only,
+        run_mode,
+        translate_clipboard_guard_sec: settings.translate_clipboard_guard_sec,
     };
 
     let output = match run_capture_script(&ctx) {
@@ -138,6 +192,7 @@ pub fn capture_via_python(
                 text: None,
                 error: Some(format_user_error("无法启动 Python 取词", &e, &ctx)),
                 restored_clipboard: false,
+                clipboard_sequence_changed: false,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
         }
@@ -155,6 +210,7 @@ pub fn capture_via_python(
             text: None,
             error: Some(user_msg),
             restored_clipboard: false,
+            clipboard_sequence_changed: false,
             duration_ms: started.elapsed().as_millis() as u64,
         };
     }
@@ -171,23 +227,48 @@ pub fn capture_via_python(
                     capture_log::log_file_hint_block()
                 )),
                 restored_clipboard: false,
+                clipboard_sequence_changed: false,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
         }
     };
 
     if !parsed.ok {
-        let mut msg = parsed
+        let raw_err = parsed
             .error
             .unwrap_or_else(|| "Python 取词失败".to_string());
-        let is_no_selection = msg.contains("剪贴板无")
-            || msg.contains("empty-clipboard")
-            || msg.contains("无文本")
-            || is_no_selection_message(&msg);
+        let mut is_copy_fail = is_copy_failure_message(&raw_err);
+        let mut msg = if is_copy_fail {
+            normalize_python_capture_error(&raw_err)
+        } else {
+            raw_err.clone()
+        };
+        let mut is_no_selection = !is_copy_fail
+            && (msg.contains("剪贴板无")
+                || msg.contains("empty-clipboard")
+                || msg.contains("无文本")
+                || is_no_selection_message(&msg));
+        if let Some(ref backup) = ctx.clipboard_backup {
+            let backup_norm = backup.trim();
+            if !backup_norm.is_empty()
+                && crate::history::is_stale_history_clipboard_reuse(
+                    ctx.translate_clipboard_guard_sec,
+                    backup_norm,
+                    Some(backup_norm),
+                    false,
+                )
+            {
+                msg = "请先选中要翻译的文字".to_string();
+                is_no_selection = true;
+                is_copy_fail = false;
+            }
+        }
         if is_no_selection {
             msg = "请先选中要翻译的文字".to_string();
         }
-        if !is_no_selection {
+        if is_copy_fail {
+            log_capture_failure("copy-verify", &msg, Some(&ctx));
+        } else if !is_no_selection {
             if let Some(diag) = parsed.diagnostics {
                 msg.push_str(&format!("\n诊断: {diag}"));
             }
@@ -198,17 +279,45 @@ pub fn capture_via_python(
             text: None,
             error: Some(msg),
             restored_clipboard: false,
+            clipboard_sequence_changed: false,
             duration_ms: started.elapsed().as_millis() as u64,
         };
     }
 
     let text = parsed.text.unwrap_or_default().trim().to_string();
+    let clipboard_sequence_changed =
+        clipboard_sequence_changed_from_diag(&parsed.diagnostics);
+    let hotkey_seq = ctx.clipboard_backup_seq;
+    let seq_after_python = crate::clipboard_util::clipboard_sequence_number();
+    let mut pipeline = format!(
+        "python_json_ok: true\ncaptured_len: {}\nhotkey_backup_len: {}\nhotkey_backup_seq: {}\nseq_after_python: {:?}\ntext_eq_backup: {}\nclipboard_sequence_changed: {}\n",
+        text.len(),
+        ctx.clipboard_backup.as_ref().map(|b| b.len()).unwrap_or(0),
+        hotkey_seq
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "None".to_string()),
+        seq_after_python,
+        ctx.clipboard_backup
+            .as_ref()
+            .map(|b| b.trim() == text.as_str())
+            .unwrap_or(false),
+        clipboard_sequence_changed,
+    );
+    pipeline.push_str(&crate::history::stale_history_clipboard_debug(
+        ctx.translate_clipboard_guard_sec,
+        &text,
+        ctx.clipboard_backup.as_deref(),
+        clipboard_sequence_changed,
+    ));
+    pipeline.push_str("\nfinal_result: PASS python_capture → 进入翻译");
+    log_capture_pipeline("post-python", &pipeline);
     if text.is_empty() {
         return SelectionResult {
             ok: false,
             text: None,
             error: Some("请先选中要翻译的文字".to_string()),
             restored_clipboard: false,
+            clipboard_sequence_changed: false,
             duration_ms: started.elapsed().as_millis() as u64,
         };
     }
@@ -219,6 +328,7 @@ pub fn capture_via_python(
         error: None,
         restored_clipboard: parsed.restored_clipboard.unwrap_or(false),
         duration_ms: started.elapsed().as_millis() as u64,
+        clipboard_sequence_changed,
     }
 }
 
@@ -250,6 +360,13 @@ fn is_embedded_python_home(home: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn log_capture_pipeline(tag: &str, detail: &str) {
+    capture_log::append(&format!(
+        "\n=== [capture-pipeline:{tag}] {} ===\n{detail}\n",
+        local_timestamp()
+    ));
+}
+
 fn log_capture_failure(tag: &str, message: &str, ctx: Option<&CaptureRunContext>) {
     let mut block = format!("\n=== [{tag}] {} ===\n{message}\n", local_timestamp());
     if let Some(c) = ctx {
@@ -267,6 +384,9 @@ fn log_capture_output(ctx: &CaptureRunContext, output: &Output) {
         output.status.code()
     );
     block.push_str(&format_context(ctx));
+    block.push_str(
+        "note: stdout 为 Python 原始 JSON；Rust 最终判定见 [capture-pipeline:post-python]\n",
+    );
     block.push_str(&format!(
         "stdout ({} bytes):\n{}\nstderr ({} bytes):\n{}\n",
         output.stdout.len(),
@@ -316,11 +436,29 @@ fn format_context(ctx: &CaptureRunContext) -> String {
     let _ = writeln!(s, "script_exists: {}", ctx.script.is_file());
     let _ = writeln!(s, "delay_ms: {}", ctx.delay_ms);
     let _ = writeln!(s, "restore_clipboard: {}", ctx.restore);
-    let _ = writeln!(s, "run_mode: python_only_pyautogui");
+    let _ = writeln!(s, "run_mode: {}", ctx.run_mode);
+    let _ = writeln!(s, "clipboard_only: {}", ctx.clipboard_only);
+    let _ = writeln!(
+        s,
+        "copy_verify_max_sec: {}",
+        crate::clipboard_util::COPY_VERIFY_MAX_SEC
+    );
+    let _ = writeln!(
+        s,
+        "translate_clipboard_guard_sec: {}",
+        ctx.translate_clipboard_guard_sec
+    );
     let _ = writeln!(
         s,
         "clipboard_backup_len: {}",
         ctx.clipboard_backup.as_ref().map(|b| b.len()).unwrap_or(0)
+    );
+    let _ = writeln!(
+        s,
+        "clipboard_backup_seq: {}",
+        ctx.clipboard_backup_seq
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "None".to_string())
     );
     s
 }
@@ -468,14 +606,18 @@ fn apply_python_env(cmd: &mut Command, home: &Path, embedded: bool) {
     }
 }
 
-fn capture_runner_code(delay_ms: u64, restore: bool) -> String {
+fn capture_runner_code(delay_ms: u64, restore: bool, clipboard_only: bool) -> String {
     let restore_lit = if restore { "True" } else { "False" };
+    let clipboard_only_lit = if clipboard_only { "True" } else { "False" };
     format!(
         r#"import os, runpy, sys
 script = os.environ[{env_key:?}]
 delay = {delay_ms}
 restore = {restore_lit}
+clipboard_only = {clipboard_only_lit}
 argv = [script, "--delay-ms", str(delay)]
+if clipboard_only:
+    argv.append("--clipboard-only")
 if restore:
     argv.append("--restore")
 sys.argv = argv
@@ -498,14 +640,27 @@ fn build_capture_command(ctx: &CaptureRunContext) -> Command {
         cmd.env("PYTHONUTF8", "1");
     }
     cmd.env(CAPTURE_SCRIPT_ENV, &ctx.script);
+    cmd.env(
+        COPY_MAX_WAIT_ENV,
+        crate::clipboard_util::COPY_VERIFY_MAX_SEC.to_string(),
+    );
     if let Some(ref backup) = ctx.clipboard_backup {
         cmd.env(CLIPBOARD_BACKUP_ENV, backup);
     } else {
         cmd.env_remove(CLIPBOARD_BACKUP_ENV);
     }
+    if let Some(seq) = ctx.clipboard_backup_seq {
+        cmd.env(CLIPBOARD_BACKUP_SEQ_ENV, seq.to_string());
+    } else {
+        cmd.env_remove(CLIPBOARD_BACKUP_SEQ_ENV);
+    }
     cmd.arg("-u")
         .arg("-c")
-        .arg(capture_runner_code(ctx.delay_ms, ctx.restore));
+        .arg(capture_runner_code(
+            ctx.delay_ms,
+            ctx.restore,
+            ctx.clipboard_only,
+        ));
     cmd
 }
 

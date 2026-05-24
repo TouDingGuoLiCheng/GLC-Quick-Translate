@@ -76,20 +76,52 @@ pub fn run() {
                         if !settings.enabled {
                             return;
                         }
+                        let is_bubble_replace =
+                            shortcut_matches(shortcut, &settings.bubble_replace_hotkey);
+                        let is_replace =
+                            shortcut_matches(shortcut, &settings.replace_hotkey);
+                        let is_translate = shortcut_matches(shortcut, &settings.hotkey);
+
+                        // 气泡已有译文时：替换类热键直接写回，禁止再次「取词中」
+                        if bubble::is_visible(&app)
+                            && bubble::has_replace_session()
+                            && (is_bubble_replace || is_replace)
+                        {
+                            let app = app.clone();
+                            std::thread::spawn(move || {
+                                let _ = capture::try_replace_from_active_bubble(&app);
+                            });
+                            return;
+                        }
+                        if bubble::is_visible(&app) && is_bubble_replace {
+                            let app = app.clone();
+                            std::thread::spawn(move || {
+                                let _ = capture::try_replace_from_active_bubble(&app);
+                            });
+                            return;
+                        }
+
                         // 必须在同步阶段捕获前台窗口，否则线程启动后焦点已丢失
                         let target = selection::capture_foreground_target();
-                        let action = if shortcut_matches(shortcut, &settings.replace_hotkey) {
+                        let action = if is_replace {
                             TranslateAction::Replace
-                        } else {
+                        } else if is_translate {
                             TranslateAction::Bubble
+                        } else {
+                            return;
                         };
-                        run_capture_translate_and_emit(
-                            app.clone(),
-                            settings,
-                            cache.clone(),
-                            target,
-                            action,
-                        );
+                        let app = app.clone();
+                        let job_settings = settings.clone();
+                        let job_cache = cache.clone();
+                        std::thread::spawn(move || {
+                            run_capture_translate_and_emit(
+                                app,
+                                job_settings,
+                                job_cache,
+                                target,
+                                action,
+                            );
+                        });
                     }
                 })
                 .build(),
@@ -117,6 +149,7 @@ pub fn run() {
             show_history_in_bubble,
             get_python_capture_log_paths,
             open_python_capture_logs,
+            clear_python_capture_logs,
             pick_bubble_background,
             clear_bubble_background,
             get_bubble_background_path,
@@ -225,7 +258,15 @@ fn register_hotkeys_on_handle(app: &tauri::AppHandle, settings: &TranslateSettin
     if !settings.enabled {
         return Ok(());
     }
-    for accel in [&settings.hotkey, &settings.replace_hotkey] {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    for accel in [
+        &settings.hotkey,
+        &settings.replace_hotkey,
+    ] {
+        if !seen.insert(accel.clone()) {
+            continue;
+        }
         let shortcut = accel
             .parse::<tauri_plugin_global_shortcut::Shortcut>()
             .map_err(|e| format!("无效快捷键 {accel}: {e}"))?;
@@ -419,6 +460,11 @@ fn get_python_capture_log_paths() -> Vec<String> {
 #[tauri::command]
 fn open_python_capture_logs() -> Result<String, String> {
     capture_log::open_logs_folder()
+}
+
+#[tauri::command]
+fn clear_python_capture_logs() -> Result<usize, String> {
+    capture_log::clear_all_logs()
 }
 
 #[tauri::command]

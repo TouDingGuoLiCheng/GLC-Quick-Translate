@@ -15,8 +15,12 @@ export interface TranslateSettings {
   hotkey: string;
   /** 翻译并用译文替换选中内容 */
   replaceHotkey: string;
+  /** 气泡展示译文后，用译文替换原选中内容 */
+  bubbleReplaceHotkey: string;
   restoreClipboard: boolean;
   copyDelayMs: number;
+  /** 上一条成功翻译记录超过该秒数后，空选误读其原文/译文时提示空选；0=关闭（非等待） */
+  translateClipboardGuardSec: number;
   targetLang: string;
   primaryProvider: string;
   fallbackEnabled: boolean;
@@ -52,6 +56,8 @@ export interface SelectionResult {
   error?: string;
   restoredClipboard: boolean;
   durationMs: number;
+  /** 取词时剪贴板序号已变化（复制确实发生） */
+  clipboardSequenceChanged?: boolean;
 }
 
 export interface TranslateResult {

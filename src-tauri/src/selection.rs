@@ -15,6 +15,22 @@ impl TargetHwnd {
     }
 }
 
+pub fn is_target_window_valid(target: TargetHwnd) -> bool {
+    if !target.is_valid() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+        return unsafe { IsWindow(HWND(target.0 as *mut _)).as_bool() };
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 #[cfg(windows)]
 pub fn capture_foreground_target() -> TargetHwnd {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;

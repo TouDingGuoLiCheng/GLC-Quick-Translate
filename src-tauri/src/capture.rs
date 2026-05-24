@@ -11,8 +11,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
-const COPY_RETRY_ATTEMPTS: u32 = 16;
-const COPY_RETRY_INTERVAL_MS: u64 = 50;
 /// 未选中可复制内容时的统一提示（不进入翻译）
 const MSG_NO_SELECTION: &str = "请先选中要翻译的文字";
 
@@ -24,6 +22,9 @@ pub struct SelectionResult {
     pub error: Option<String>,
     pub restored_clipboard: bool,
     pub duration_ms: u64,
+    /// 本次取词中剪贴板序号已变化（Windows），表示复制确实发生，可与 backup 同文
+    #[serde(default)]
+    pub clipboard_sequence_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +45,7 @@ pub fn capture_selected_text(
             text: None,
             error: Some("未找到目标窗口，请先聚焦到要翻译的应用".to_string()),
             restored_clipboard: false,
+            clipboard_sequence_changed: false,
             duration_ms: 0,
         };
     }
@@ -70,28 +72,38 @@ fn capture_selected_text_rust(
 ) -> SelectionResult {
     let started = std::time::Instant::now();
 
-    let backup = read_clipboard_text(app).ok().filter(|t| !t.trim().is_empty());
+    let backup = crate::clipboard_util::read_arboard();
 
+    let copy_started = std::time::Instant::now();
     if let Err(e) = selection::simulate_copy_to(target) {
+        crate::capture_log::append(&format!(
+            "\n=== [capture-copy] {} simulate_copy failed ===\n{e}\n",
+            capture_log_timestamp()
+        ));
         return SelectionResult {
             ok: false,
             text: None,
-            error: Some(e),
+            error: Some(format!("复制失败：{e}")),
             restored_clipboard: false,
+            clipboard_sequence_changed: false,
             duration_ms: started.elapsed().as_millis() as u64,
         };
     }
 
     thread::sleep(Duration::from_millis(settings.copy_delay_ms.max(80)));
-    let captured = match read_clipboard_after_copy(app, backup.as_deref()) {
+    let captured = match crate::clipboard_util::read_text_after_copy(backup.as_deref(), copy_started)
+    {
         Ok(t) => t,
         Err(e) => {
-            let restored = settings.restore_clipboard && restore_clipboard(app, backup.as_deref());
+            log_copy_failure(&e, copy_started);
+            let restored =
+                settings.restore_clipboard && restore_clipboard(app, backup.as_deref());
             return SelectionResult {
                 ok: false,
                 text: None,
-                error: Some(e),
+                error: Some(normalize_copy_error(&e)),
                 restored_clipboard: restored,
+                clipboard_sequence_changed: false,
                 duration_ms: started.elapsed().as_millis() as u64,
             };
         }
@@ -105,6 +117,7 @@ fn capture_selected_text_rust(
             text: None,
             error: Some(MSG_NO_SELECTION.to_string()),
             restored_clipboard: restored,
+            clipboard_sequence_changed: false,
             duration_ms: started.elapsed().as_millis() as u64,
         };
     }
@@ -117,38 +130,36 @@ fn capture_selected_text_rust(
         text: Some(text),
         error: None,
         restored_clipboard: restored,
+        clipboard_sequence_changed: false,
         duration_ms: started.elapsed().as_millis() as u64,
     }
 }
 
-fn read_clipboard_after_copy(
-    app: &AppHandle,
-    backup: Option<&str>,
-) -> Result<String, String> {
-    let backup_norm = backup.map(str::trim).unwrap_or("");
-
-    for attempt in 0..COPY_RETRY_ATTEMPTS {
-        if let Ok(text) = read_clipboard_text(app) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                if backup_norm.is_empty() || trimmed != backup_norm {
-                    return Ok(trimmed.to_string());
-                }
-            }
-        }
-        if attempt + 1 < COPY_RETRY_ATTEMPTS {
-            thread::sleep(Duration::from_millis(COPY_RETRY_INTERVAL_MS));
-        }
+fn normalize_copy_error(msg: &str) -> String {
+    if msg.starts_with("复制失败") {
+        return msg.to_string();
     }
-
-    if let Ok(text) = read_clipboard_text(app) {
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
+    if msg.contains("复制后未能从剪贴板") {
+        return crate::clipboard_util::MSG_COPY_FAILED_STALE.to_string();
     }
+    format!("复制失败：{msg}")
+}
 
-    Err("复制后未能从剪贴板读取文字，请确认已选中可复制的内容".to_string())
+fn log_copy_failure(reason: &str, copy_started: std::time::Instant) {
+    let elapsed_ms = copy_started.elapsed().as_millis();
+    crate::capture_log::append(&format!(
+        "\n=== [capture-copy] {} failed after {elapsed_ms}ms ===\n{reason}\n",
+        capture_log_timestamp()
+    ));
+}
+
+fn capture_log_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("unix={secs}")
 }
 
 fn read_clipboard_text(app: &AppHandle) -> Result<String, String> {
@@ -205,6 +216,48 @@ pub enum TranslateAction {
     Replace,
 }
 
+pub fn try_replace_from_active_bubble(app: &AppHandle) -> Result<(), String> {
+    if !bubble::is_visible(app) {
+        return Ok(());
+    }
+    let Some((target, translated)) = bubble::peek_replace_session() else {
+        let settings = crate::settings::load();
+        let msg = "暂无译文可替换，请先完成翻译".to_string();
+        let _ = bubble::present(app, &settings, &BubblePayload::error(msg.clone(), None));
+        bubble::schedule_auto_hide(app.clone(), settings.bubble_auto_close_sec);
+        return Err(msg);
+    };
+
+    if !selection::is_target_window_valid(target) {
+        let settings = crate::settings::load();
+        let msg = "目标窗口已关闭，请重新选中文本后再翻译".to_string();
+        let _ = bubble::present(app, &settings, &BubblePayload::error(msg.clone(), None));
+        bubble::schedule_auto_hide(app.clone(), settings.bubble_auto_close_sec);
+        return Err(msg);
+    }
+
+    write_clipboard_text(app, &translated)?;
+    bubble::hide(app);
+    thread::sleep(Duration::from_millis(120));
+
+    match selection::simulate_paste_to(target) {
+        Ok(()) => {
+            bubble::clear_replace_session();
+            Ok(())
+        }
+        Err(e) => {
+            let settings = crate::settings::load();
+            let _ = bubble::present(
+                app,
+                &settings,
+                &BubblePayload::error(format!("替换失败: {e}"), None),
+            );
+            bubble::schedule_auto_hide(app.clone(), settings.bubble_auto_close_sec);
+            Err(e)
+        }
+    }
+}
+
 pub fn run_capture_translate_and_emit(
     app: AppHandle,
     settings: TranslateSettings,
@@ -212,6 +265,9 @@ pub fn run_capture_translate_and_emit(
     target: selection::TargetHwnd,
     action: TranslateAction,
 ) {
+    if action == TranslateAction::Bubble {
+        bubble::clear_replace_session();
+    }
     if action == TranslateAction::Bubble || action == TranslateAction::Replace {
         let _ = bubble::present(&app, &settings, &loading_bubble_payload(&settings, "取词中…"));
     }
@@ -227,8 +283,9 @@ pub fn run_capture_translate_and_emit(
         }
 
         let should_restore_clipboard = settings.restore_clipboard && action != TranslateAction::Replace;
+        let hotkey_clipboard = read_clipboard_text(&app).ok();
         let clipboard_backup = if should_restore_clipboard {
-            read_clipboard_text(&app).ok()
+            hotkey_clipboard.clone()
         } else {
             None
         };
@@ -236,10 +293,23 @@ pub fn run_capture_translate_and_emit(
         let selection = capture_selected_text(&app, &capture_settings, target);
 
         if !selection.ok {
-            let msg = selection
+            let mut msg = selection
                 .error
                 .clone()
                 .unwrap_or_else(|| MSG_NO_SELECTION.to_string());
+            if let Some(ref clip) = hotkey_clipboard {
+                let clip_norm = clip.trim();
+                if !clip_norm.is_empty()
+                    && crate::history::is_stale_history_clipboard_reuse(
+                        settings.translate_clipboard_guard_sec,
+                        clip_norm,
+                        hotkey_clipboard.as_deref(),
+                        false,
+                    )
+                {
+                    msg = MSG_NO_SELECTION.to_string();
+                }
+            }
             present_capture_failure(&app, &settings, action, &msg, selection.text.clone());
             let payload = TranslateDonePayload {
                 selection,
@@ -258,13 +328,29 @@ pub fn run_capture_translate_and_emit(
         }
 
         let source = selection.text.clone().unwrap_or_default();
-        if source.trim().is_empty() {
+        let guard_debug = crate::history::stale_history_clipboard_debug(
+            settings.translate_clipboard_guard_sec,
+            source.trim(),
+            hotkey_clipboard.as_deref(),
+            selection.clipboard_sequence_changed,
+        );
+        if crate::history::is_stale_history_clipboard_reuse(
+            settings.translate_clipboard_guard_sec,
+            source.trim(),
+            hotkey_clipboard.as_deref(),
+            selection.clipboard_sequence_changed,
+        ) {
+            crate::capture_log::append(&format!(
+                "\n=== [capture-pipeline:capture-thread] {} ===\nselection_ok: true\ncaptured_len: {}\n{guard_debug}\nfinal_result: REJECT history-guard → 请先选中（未调用翻译）\n",
+                capture_log_timestamp(),
+                source.trim().len(),
+            ));
             present_capture_failure(
                 &app,
                 &settings,
                 action,
                 MSG_NO_SELECTION,
-                selection.text.clone(),
+                Some(source.clone()),
             );
             let payload = TranslateDonePayload {
                 selection: SelectionResult {
@@ -272,6 +358,7 @@ pub fn run_capture_translate_and_emit(
                     text: None,
                     error: Some(MSG_NO_SELECTION.to_string()),
                     restored_clipboard: selection.restored_clipboard,
+                    clipboard_sequence_changed: selection.clipboard_sequence_changed,
                     duration_ms: selection.duration_ms,
                 },
                 translate: TranslateResult {
@@ -287,6 +374,42 @@ pub fn run_capture_translate_and_emit(
             let _ = app.emit("translate:done", &payload);
             return;
         }
+        if source.trim().is_empty() {
+            present_capture_failure(
+                &app,
+                &settings,
+                action,
+                MSG_NO_SELECTION,
+                selection.text.clone(),
+            );
+            let payload = TranslateDonePayload {
+                selection: SelectionResult {
+                    ok: false,
+                    text: None,
+                    error: Some(MSG_NO_SELECTION.to_string()),
+                    restored_clipboard: selection.restored_clipboard,
+                    clipboard_sequence_changed: selection.clipboard_sequence_changed,
+                    duration_ms: selection.duration_ms,
+                },
+                translate: TranslateResult {
+                    ok: false,
+                    source_text: String::new(),
+                    translated_text: None,
+                    provider: None,
+                    from_cache: false,
+                    error: Some("取词失败".to_string()),
+                    duration_ms: 0,
+                },
+            };
+            let _ = app.emit("translate:done", &payload);
+            return;
+        }
+        crate::capture_log::append(&format!(
+            "\n=== [capture-pipeline:capture-thread] {} ===\nselection_ok: true\ncaptured_len: {}\n{guard_debug}\nfinal_result: PASS → 开始翻译\n",
+            capture_log_timestamp(),
+            source.trim().len(),
+        ));
+
         if action == TranslateAction::Bubble || action == TranslateAction::Replace {
             let mut loading = loading_bubble_payload(&settings, "翻译中…");
             loading.source_text = Some(truncate_preview(&source));
@@ -294,6 +417,18 @@ pub fn run_capture_translate_and_emit(
         }
 
         let translate = translator::translate(&app, cache.as_ref(), &settings, &source);
+
+        crate::capture_log::append(&format!(
+            "\n=== [capture-pipeline:translate-done] {} ===\ntranslate_ok: {}\nfrom_cache: {}\nduration_ms: {}\nerror: {}\n",
+            capture_log_timestamp(),
+            translate.ok,
+            translate.from_cache,
+            translate.duration_ms,
+            translate
+                .error
+                .as_deref()
+                .unwrap_or(""),
+        ));
 
         if action == TranslateAction::Replace {
             if translate.ok {
@@ -331,6 +466,9 @@ pub fn run_capture_translate_and_emit(
                 bubble::schedule_auto_hide(app.clone(), settings.bubble_auto_close_sec);
             }
         } else if translate.ok {
+            if let Some(ref translated) = translate.translated_text {
+                bubble::set_replace_session(target, translated.clone());
+            }
             let _ = bubble::present(
                 &app,
                 &settings,
@@ -402,10 +540,16 @@ fn write_clipboard_text(app: &AppHandle, text: &str) -> Result<(), String> {
 
 fn is_no_selection_message(msg: &str) -> bool {
     let m = msg.trim();
-    m.contains("请先选中")
+    (m.contains("请先选中")
         || m.contains("无文本")
         || m.contains("未选中")
         || m.contains("剪贴板无")
+        || m.contains("empty-clipboard"))
+        && !m.contains("复制失败")
+}
+
+fn is_copy_failure_message(msg: &str) -> bool {
+    msg.trim().contains("复制失败")
 }
 
 fn present_capture_failure(
@@ -415,7 +559,10 @@ fn present_capture_failure(
     msg: &str,
     source_hint: Option<String>,
 ) {
-    if action == TranslateAction::Replace && is_no_selection_message(msg) {
+    if action == TranslateAction::Replace
+        && is_no_selection_message(msg)
+        && !is_copy_failure_message(msg)
+    {
         bubble::hide(app);
         return;
     }

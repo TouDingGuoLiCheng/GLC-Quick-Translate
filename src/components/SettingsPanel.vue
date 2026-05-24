@@ -166,6 +166,16 @@ async function openLogsFolder() {
     logOpenMsg.value = String(e);
   }
 }
+
+async function clearCaptureLogs() {
+  logOpenMsg.value = "";
+  try {
+    const n = await invoke<number>("clear_python_capture_logs");
+    logOpenMsg.value = n > 0 ? "日志已清空" : "暂无日志文件";
+  } catch (e) {
+    logOpenMsg.value = String(e);
+  }
+}
 </script>
 
 <template>
@@ -228,6 +238,18 @@ async function openLogsFolder() {
               />
             </label>
             <label class="row">
+              <span class="label">气泡内替换</span>
+              <input
+                v-model="local.bubbleReplaceHotkey"
+                class="input"
+                type="text"
+                placeholder="Shift+Enter"
+              />
+            </label>
+            <p class="hint-msg">
+              翻译并显示气泡后，在气泡自动关闭前按「气泡内替换」可将译文写回原文处。
+            </p>
+            <label class="row">
               <span class="label">目标语言</span>
               <select v-model="local.targetLang" class="input">
                 <option v-for="opt in targetLangOptions" :key="opt.value" :value="opt.value">
@@ -264,6 +286,19 @@ async function openLogsFolder() {
                 min="80"
                 max="800"
               />
+            </label>
+            <label class="row col-block">
+              <span class="label">历史剪贴板保护 (秒)</span>
+              <input
+                v-model.number="local.translateClipboardGuardSec"
+                class="input input-narrow"
+                type="number"
+                min="0"
+                max="60"
+              />
+              <p class="hint-msg">
+                空选时若剪贴板仍是上一条成功翻译的原文/译文，且该记录已超过此秒数，则提示「请先选中」（0=关闭）。非等待时间。
+              </p>
             </label>
             <label class="row">
               <span class="label">超时 (秒)</span>
@@ -379,6 +414,9 @@ async function openLogsFolder() {
           <div v-show="sectionOpen.advanced" class="section-body">
             <button type="button" class="btn btn-secondary block-btn" @click="openLogsFolder">
               打开日志文件夹
+            </button>
+            <button type="button" class="btn btn-secondary block-btn" @click="clearCaptureLogs">
+              清空日志
             </button>
             <p v-if="logOpenMsg" class="hint-msg">{{ logOpenMsg }}</p>
           </div>

@@ -1,5 +1,5 @@
-# 下载 Windows 嵌入式 Python，仅安装取词所需 pyperclip，输出到 src-tauri/bundled-python
-# 供 Tauri 打包为安装目录下的 python/ 文件夹（Rust 已用 --clipboard-only，无需 pyautogui 等）
+﻿# Download Windows embed Python; install pyperclip + pyautogui -> src-tauri/bundled-python
+# Bundled with Tauri installer as python/ folder
 param(
     [string]$PythonVersion = "3.12.10",
     [switch]$Force
@@ -10,10 +10,25 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $OutDir = Join-Path $ProjectRoot "src-tauri\bundled-python"
 $Marker = Join-Path $OutDir ".bundle-ready"
+$RequiredPackages = @("pyperclip", "pyautogui")
 
-if ((Test-Path $Marker) -and -not $Force) {
+function Test-BundleReady {
+    param([string]$Root)
+    if (-not (Test-Path (Join-Path $Root "pythonw.exe"))) { return $false }
+    $site = Join-Path $Root "Lib\site-packages"
+    foreach ($pkg in $RequiredPackages) {
+        if (-not (Test-Path (Join-Path $site $pkg))) { return $false }
+    }
+    return $true
+}
+
+if (-not $Force -and (Test-Path $Marker) -and (Test-BundleReady $OutDir)) {
     Write-Host "bundled-python ready (use -Force to rebuild)"
     exit 0
+}
+
+if (-not $Force -and (Test-Path $OutDir) -and -not (Test-BundleReady $OutDir)) {
+    Write-Host "bundled-python incomplete (missing $($RequiredPackages -join ', ')), rebuilding..."
 }
 
 if ($Force -and (Test-Path $OutDir)) {
