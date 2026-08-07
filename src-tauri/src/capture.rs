@@ -154,12 +154,7 @@ fn log_copy_failure(reason: &str, copy_started: std::time::Instant) {
 }
 
 fn capture_log_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("unix={secs}")
+    crate::capture_log::timestamp()
 }
 
 fn read_clipboard_text(app: &AppHandle) -> Result<String, String> {
@@ -217,35 +212,84 @@ pub enum TranslateAction {
 }
 
 pub fn try_replace_from_active_bubble(app: &AppHandle) -> Result<(), String> {
-    if !bubble::is_visible(app) {
+    let bubble_visible = bubble::is_visible(app);
+    let has_session = bubble::has_replace_session();
+    crate::capture_log::append(&format!(
+        "\n=== [bubble-replace:start] {} ===\nbubble_visible: {bubble_visible}\nhas_replace_session: {has_session}\n",
+        capture_log_timestamp(),
+    ));
+
+    if !bubble_visible {
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace:abort] {} ===\nreason: bubble_not_visible (silent Ok)\n",
+            capture_log_timestamp(),
+        ));
         return Ok(());
     }
     let Some((target, translated)) = bubble::peek_replace_session() else {
         let settings = crate::settings::load();
         let msg = "暂无译文可替换，请先完成翻译".to_string();
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace:abort] {} ===\nreason: no_replace_session\nmsg: {msg}\n",
+            capture_log_timestamp(),
+        ));
         let _ = bubble::present(app, &settings, &BubblePayload::error(msg.clone(), None));
         bubble::schedule_auto_hide(app.clone(), settings.bubble_auto_close_sec);
         return Err(msg);
     };
 
+    crate::capture_log::append(&format!(
+        "=== [bubble-replace:session] {} ===\ntarget_hwnd: {}\ntranslated_len: {}\ntranslated_preview: {}\n",
+        capture_log_timestamp(),
+        target.0,
+        translated.len(),
+        truncate_preview(&translated),
+    ));
+
     if !selection::is_target_window_valid(target) {
         let settings = crate::settings::load();
         let msg = "目标窗口已关闭，请重新选中文本后再翻译".to_string();
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace:abort] {} ===\nreason: target_window_invalid\ntarget_hwnd: {}\nmsg: {msg}\n",
+            capture_log_timestamp(),
+            target.0,
+        ));
         let _ = bubble::present(app, &settings, &BubblePayload::error(msg.clone(), None));
         bubble::schedule_auto_hide(app.clone(), settings.bubble_auto_close_sec);
         return Err(msg);
     }
 
-    write_clipboard_text(app, &translated)?;
+    if let Err(e) = write_clipboard_text(app, &translated) {
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace:abort] {} ===\nreason: clipboard_write_failed\nerror: {e}\n",
+            capture_log_timestamp(),
+        ));
+        return Err(e);
+    }
+    crate::capture_log::append(&format!(
+        "=== [bubble-replace:clipboard] {} ===\nwrite_ok: true\nhiding_bubble_before_paste: true\n",
+        capture_log_timestamp(),
+    ));
+
     bubble::hide(app);
     thread::sleep(Duration::from_millis(120));
 
     match selection::simulate_paste_to(target) {
         Ok(()) => {
             bubble::clear_replace_session();
+            crate::capture_log::append(&format!(
+                "=== [bubble-replace:done] {} ===\nresult: ok\ntarget_hwnd: {}\n",
+                capture_log_timestamp(),
+                target.0,
+            ));
             Ok(())
         }
         Err(e) => {
+            crate::capture_log::append(&format!(
+                "=== [bubble-replace:done] {} ===\nresult: paste_failed\ntarget_hwnd: {}\nerror: {e}\n",
+                capture_log_timestamp(),
+                target.0,
+            ));
             let settings = crate::settings::load();
             let _ = bubble::present(
                 app,
@@ -433,9 +477,27 @@ pub fn run_capture_translate_and_emit(
         if action == TranslateAction::Replace {
             if translate.ok {
                 if let Some(ref translated) = translate.translated_text {
+                    crate::capture_log::append(&format!(
+                        "\n=== [replace-hotkey:apply] {} ===\ntarget_hwnd: {}\nsource_len: {}\ntranslated_len: {}\ntranslated_preview: {}\n",
+                        capture_log_timestamp(),
+                        target.0,
+                        source.len(),
+                        translated.len(),
+                        truncate_preview(translated),
+                    ));
                     match apply_replace(&app, target, translated) {
-                        Ok(()) => bubble::hide(&app),
+                        Ok(()) => {
+                            crate::capture_log::append(&format!(
+                                "=== [replace-hotkey:done] {} ===\nresult: ok\n",
+                                capture_log_timestamp(),
+                            ));
+                            bubble::hide(&app);
+                        }
                         Err(e) => {
+                            crate::capture_log::append(&format!(
+                                "=== [replace-hotkey:done] {} ===\nresult: failed\nerror: {e}\n",
+                                capture_log_timestamp(),
+                            ));
                             let _ = bubble::present(
                                 &app,
                                 &settings,
@@ -451,6 +513,10 @@ pub fn run_capture_translate_and_emit(
                         }
                     }
                 } else {
+                    crate::capture_log::append(&format!(
+                        "=== [replace-hotkey:done] {} ===\nresult: abort_empty_translated\n",
+                        capture_log_timestamp(),
+                    ));
                     bubble::hide(&app);
                 }
             } else {
@@ -458,6 +524,10 @@ pub fn run_capture_translate_and_emit(
                     .error
                     .clone()
                     .unwrap_or_else(|| "翻译失败".to_string());
+                crate::capture_log::append(&format!(
+                    "=== [replace-hotkey:done] {} ===\nresult: translate_failed\nerror: {err}\n",
+                    capture_log_timestamp(),
+                ));
                 let _ = bubble::present(
                     &app,
                     &settings,
@@ -524,7 +594,18 @@ pub fn run_capture_translate_and_emit(
 }
 
 fn apply_replace(app: &AppHandle, target: selection::TargetHwnd, text: &str) -> Result<(), String> {
-    write_clipboard_text(app, text)?;
+    write_clipboard_text(app, text).map_err(|e| {
+        crate::capture_log::append(&format!(
+            "=== [apply-replace] {} clipboard_write_failed: {e} ===\n",
+            capture_log_timestamp(),
+        ));
+        e
+    })?;
+    crate::capture_log::append(&format!(
+        "=== [apply-replace] {} clipboard_ok → simulate_paste target_hwnd={} ===\n",
+        capture_log_timestamp(),
+        target.0,
+    ));
     selection::simulate_paste_to(target)
 }
 

@@ -64,6 +64,33 @@ pub fn log_file_hint_block() -> String {
     lines.join("\n")
 }
 
+/// 本地可读时间，精确到毫秒，便于对照复现时刻。
+pub fn timestamp() -> String {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::GetLocalTime;
+        let st = unsafe { GetLocalTime() };
+        return format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+            st.wYear,
+            st.wMonth,
+            st.wDay,
+            st.wHour,
+            st.wMinute,
+            st.wSecond,
+            st.wMilliseconds
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dur = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        format!("unix={}.{:03}", dur.as_secs(), dur.subsec_millis())
+    }
+}
+
 pub fn append(block: &str) {
     for path in all_log_files() {
         if let Some(parent) = path.parent() {

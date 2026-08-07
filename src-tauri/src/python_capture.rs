@@ -689,7 +689,7 @@ fn capture_script_path() -> Result<PathBuf, String> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for p in [
         manifest.join("resources/capture_clipboard.py"),
-        manifest.join("../../workspaces/quick_translate/capture_clipboard.py"),
+        manifest.join("../workspaces/quick_translate/capture_clipboard.py"),
     ] {
         if p.is_file() {
             return Ok(subprocess_path(&p));

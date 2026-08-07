@@ -14,9 +14,11 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 const BUBBLE_LABEL: &str = "translate-bubble";
 const BUBBLE_WIDTH: u32 = 320;
 const BUBBLE_HEIGHT_MIN: u32 = 72;
-const BUBBLE_HEIGHT_MAX: u32 = 200;
+const BUBBLE_HEIGHT_MAX: u32 = 220;
 /// 成功态固定高度：顶栏 + 原文单行区 + 译文滚动区
 const BUBBLE_HEIGHT_SUCCESS: u32 = 152;
+/// 失败态手动输入：顶栏 + 输入框 + 操作行
+const BUBBLE_HEIGHT_MANUAL: u32 = 168;
 const GAP: i32 = 2;
 const EDGE_MARGIN: i32 = 12;
 
@@ -36,20 +38,42 @@ static BUBBLE_REPLACE_SESSION: Mutex<Option<BubbleReplaceSession>> = Mutex::new(
 
 pub fn set_replace_session(target: TargetHwnd, translated: String) {
     if !target.is_valid() || translated.trim().is_empty() {
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace-session] {} clear (invalid target or empty text) target_hwnd={} text_len={} ===\n",
+            crate::capture_log::timestamp(),
+            target.0,
+            translated.len(),
+        ));
         clear_replace_session();
         return;
     }
     if let Ok(mut guard) = BUBBLE_REPLACE_SESSION.lock() {
         *guard = Some(BubbleReplaceSession {
             target,
-            translated,
+            translated: translated.clone(),
         });
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace-session] {} set target_hwnd={} translated_len={} ===\n",
+            crate::capture_log::timestamp(),
+            target.0,
+            translated.len(),
+        ));
     }
 }
 
 pub fn clear_replace_session() {
-    if let Ok(mut guard) = BUBBLE_REPLACE_SESSION.lock() {
+    let had = if let Ok(mut guard) = BUBBLE_REPLACE_SESSION.lock() {
+        let had = guard.is_some();
         *guard = None;
+        had
+    } else {
+        false
+    };
+    if had {
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace-session] {} cleared ===\n",
+            crate::capture_log::timestamp(),
+        ));
     }
 }
 
@@ -198,6 +222,10 @@ pub fn register_bubble_replace_hotkey(
     if let Ok(mut guard) = BUBBLE_REPLACE_ACCEL.lock() {
         *guard = Some(accel.to_string());
     }
+    crate::capture_log::append(&format!(
+        "=== [bubble-replace-hotkey] {} registered accel={accel} ===\n",
+        crate::capture_log::timestamp(),
+    ));
     Ok(())
 }
 
@@ -210,6 +238,10 @@ pub fn unregister_bubble_replace_hotkey(app: &AppHandle) -> Result<(), String> {
         if let Ok(shortcut) = accel.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app.global_shortcut().unregister(shortcut);
         }
+        crate::capture_log::append(&format!(
+            "=== [bubble-replace-hotkey] {} unregistered accel={accel} ===\n",
+            crate::capture_log::timestamp(),
+        ));
     }
     Ok(())
 }
@@ -254,17 +286,27 @@ pub fn schedule_auto_hide(app: AppHandle, seconds: u64) {
     });
 }
 
+/// 取消已安排的气泡自动关闭（进入手动输入时调用）。
+pub fn cancel_auto_hide() {
+    BUBBLE_HIDE_GEN.fetch_add(1, Ordering::SeqCst);
+}
+
+/// 进入手动输入态：取消自动关闭并拉高气泡窗口。
+pub fn prepare_manual_input(app: &AppHandle) -> Result<(), String> {
+    cancel_auto_hide();
+    let window = window_util::ensure_webview_window(app, BUBBLE_LABEL)?;
+    position_bubble(&window, BUBBLE_HEIGHT_MANUAL)?;
+    Ok(())
+}
+
 fn estimate_bubble_height(payload: &BubblePayload) -> u32 {
     match payload.phase.as_str() {
         "loading" => 56,
         "error" => {
             let err_len = payload.error.as_ref().map(|s| s.chars().count()).unwrap_or(0);
-            let src_len = payload
-                .source_text
-                .as_ref()
-                .map(|s| s.chars().count())
-                .unwrap_or(0);
-            64 + ((err_len + 27) / 28 + (src_len + 27) / 28).min(3) as u32 * 14
+            // 顶栏已含「手动输入」；至少按两行正文估算，避免高 DPI 下被压扁
+            let lines = ((err_len + 25) / 26).max(2).min(5) as u32;
+            86 + lines * 20
         }
         "success" => BUBBLE_HEIGHT_SUCCESS,
         _ => BUBBLE_HEIGHT_SUCCESS,

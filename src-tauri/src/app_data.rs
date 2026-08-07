@@ -2,15 +2,18 @@
 
 use std::path::PathBuf;
 
-/// 正式安装包使用的配置目录名（与开发时「果粒橙工具箱」分离）
 pub const APP_DIR_NAME: &str = "GLC Quick Translate";
 
 fn dir_name() -> &'static str {
-    if cfg!(debug_assertions) {
-        "果粒橙工具箱"
-    } else {
-        APP_DIR_NAME
-    }
+    APP_DIR_NAME
+}
+
+/// 工程根目录（`quick-translate/src-tauri` 的上一级）
+pub fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."))
 }
 
 pub fn app_data_dir() -> PathBuf {

@@ -1,0 +1,3 @@
+# 快捷翻译嵌入式 Python / 开发环境取词
+pyperclip>=1.8.2
+pyautogui>=0.9.54

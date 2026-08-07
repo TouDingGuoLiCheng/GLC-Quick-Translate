@@ -6,6 +6,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { applyAppTheme, normalizeSettings } from "./theme";
 import SettingsPanel from "./components/SettingsPanel.vue";
+import ManualInputPanel from "./components/ManualInputPanel.vue";
 import type {
   HistoryRecord,
   SelectionResult,
@@ -50,6 +51,7 @@ const lastSelection = ref<SelectionResult | null>(null);
 const lastTranslate = ref<TranslateResult | null>(null);
 const translating = ref(false);
 const showSettings = ref(false);
+const showManualInput = ref(false);
 const saving = ref(false);
 
 const hotkeyHint = computed(() => settings.value.hotkey);
@@ -126,6 +128,19 @@ async function retranslateItem(item: HistoryRecord) {
   }
 }
 
+async function submitManualTranslate(text: string) {
+  const t = text.trim();
+  if (!t) return;
+  translating.value = true;
+  try {
+    await invoke<TranslateResult>("translate_text", { text: t });
+    showManualInput.value = false;
+    await loadHistory();
+  } finally {
+    translating.value = false;
+  }
+}
+
 async function clearHistory() {
   await invoke("clear_history");
   history.value = [];
@@ -134,7 +149,7 @@ async function clearHistory() {
 async function startDrag(e: MouseEvent) {
   if (e.button !== 0) return;
   const t = e.target as HTMLElement;
-  if (t.closest("button, a, input, select, .history-acts, .settings-overlay")) return;
+  if (t.closest("button, a, input, select, textarea, .history-acts, .settings-overlay, .manual-overlay")) return;
   try {
     await getCurrentWindow().startDragging();
   } catch {
@@ -183,6 +198,20 @@ onUnmounted(() => {
       </div>
       <div class="titlebar-actions">
         <span v-if="translating" class="status-pill">翻译中…</span>
+        <button
+          type="button"
+          class="icon-btn"
+          title="手动输入"
+          aria-label="手动输入"
+          @click.stop="showManualInput = true"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+            />
+          </svg>
+        </button>
         <button
           type="button"
           class="icon-btn gear-btn"
@@ -302,6 +331,12 @@ onUnmounted(() => {
     </main>
 
     <Teleport to="body">
+      <ManualInputPanel
+        v-if="showManualInput"
+        :submitting="translating"
+        @submit="submitManualTranslate"
+        @close="showManualInput = false"
+      />
       <SettingsPanel
         v-if="showSettings"
         :settings="settings"

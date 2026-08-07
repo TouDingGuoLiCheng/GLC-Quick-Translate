@@ -19,7 +19,8 @@ export default defineConfig(async () => ({
   server: {
     port: 1422,
     strictPort: true,
-    host: host || false,
+    // Windows 上 localhost 常解析到 ::1，Vite 只听 IPv6 时 Tauri 连 127.0.0.1 会一直 Waiting
+    host: host || "127.0.0.1",
     hmr: host
       ? {
           protocol: "ws",

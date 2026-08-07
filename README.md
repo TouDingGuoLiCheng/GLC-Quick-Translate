@@ -32,7 +32,7 @@
 ### 2) 启动开发
 
 ```powershell
-cd "d:\VS\工具箱开发\quick-translate"
+cd "d:\VS\quick-translate"
 npm install
 npm run tauri dev
 ```
@@ -61,7 +61,7 @@ npm run tauri dev
 ### 一键构建
 
 ```powershell
-cd "d:\VS\工具箱开发\quick-translate"
+cd "d:\VS\quick-translate"
 npm install
 npm run tauri build
 ```
@@ -85,6 +85,7 @@ npm run prepare:python
 quick-translate/
 ├─ src/                  # Vue 前端
 ├─ src-tauri/            # Rust + Tauri 后端
+├─ workspaces/           # Python 取词脚本等工作区
 ├─ scripts/              # 构建辅助脚本
 └─ README.md
 ```
@@ -105,7 +106,7 @@ quick-translate/
 
 ## 开发备注
 
-- 项目开发方案可参考：[`../快捷翻译-开发方案.md`](../快捷翻译-开发方案.md)
+- 项目开发方案见工具箱仓库中的 `快捷翻译-开发方案.md`（若已迁移可在此目录补充独立方案文档）
 - 当前版本：`0.1.0`
 
 ## License

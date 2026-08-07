@@ -87,6 +87,12 @@ pub fn run() {
                             && bubble::has_replace_session()
                             && (is_bubble_replace || is_replace)
                         {
+                            capture_log::append(&format!(
+                                "\n=== [hotkey] {} bubble-replace path ===\nis_bubble_replace: {is_bubble_replace}\nis_replace: {is_replace}\nbubble_visible: true\nhas_session: true\naccel_bubble: {}\naccel_replace: {}\n",
+                                capture_log::timestamp(),
+                                settings.bubble_replace_hotkey,
+                                settings.replace_hotkey,
+                            ));
                             let app = app.clone();
                             std::thread::spawn(move || {
                                 let _ = capture::try_replace_from_active_bubble(&app);
@@ -94,6 +100,11 @@ pub fn run() {
                             return;
                         }
                         if bubble::is_visible(&app) && is_bubble_replace {
+                            capture_log::append(&format!(
+                                "\n=== [hotkey] {} bubble-replace path (no session) ===\nbubble_visible: true\nhas_session: false\naccel: {}\n",
+                                capture_log::timestamp(),
+                                settings.bubble_replace_hotkey,
+                            ));
                             let app = app.clone();
                             std::thread::spawn(move || {
                                 let _ = capture::try_replace_from_active_bubble(&app);
@@ -108,8 +119,25 @@ pub fn run() {
                         } else if is_translate {
                             TranslateAction::Bubble
                         } else {
+                            if is_bubble_replace {
+                                capture_log::append(&format!(
+                                    "\n=== [hotkey] {} bubble-replace IGNORED ===\nreason: bubble_not_visible_or_unmatched\nbubble_visible: {}\nhas_session: {}\naccel: {}\n",
+                                    capture_log::timestamp(),
+                                    bubble::is_visible(&app),
+                                    bubble::has_replace_session(),
+                                    settings.bubble_replace_hotkey,
+                                ));
+                            }
                             return;
                         };
+                        if action == TranslateAction::Replace {
+                            capture_log::append(&format!(
+                                "\n=== [hotkey] {} replace-translate path ===\ntarget_hwnd: {}\naccel: {}\n",
+                                capture_log::timestamp(),
+                                target.0,
+                                settings.replace_hotkey,
+                            ));
+                        }
                         let app = app.clone();
                         let job_settings = settings.clone();
                         let job_cache = cache.clone();
@@ -143,6 +171,7 @@ pub fn run() {
             translate_text,
             list_translators,
             dismiss_bubble,
+            prepare_bubble_manual_input,
             list_history,
             clear_history,
             delete_history_record,
@@ -450,6 +479,11 @@ fn list_translators() -> providers::TranslatorsFile {
 #[tauri::command]
 fn dismiss_bubble(app: tauri::AppHandle) {
     bubble::hide(&app);
+}
+
+#[tauri::command]
+fn prepare_bubble_manual_input(app: tauri::AppHandle) -> Result<(), String> {
+    bubble::prepare_manual_input(&app)
 }
 
 #[tauri::command]

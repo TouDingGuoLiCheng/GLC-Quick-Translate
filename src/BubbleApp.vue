@@ -37,6 +37,10 @@ const translatedText = ref("");
 const provider = ref("");
 const fromCache = ref(false);
 const errorMsg = ref("");
+const manualMode = ref(false);
+const manualText = ref("");
+const manualSubmitting = ref(false);
+const manualInputRef = ref<HTMLTextAreaElement | null>(null);
 const bgDataUrl = ref<string | null>(null);
 const appearance = ref<BubbleAppearance>({
   appTheme: "light",
@@ -167,6 +171,10 @@ async function applyPayload(p: BubblePayload) {
   provider.value = p.provider ?? "";
   fromCache.value = !!(p.fromCache ?? p.from_cache);
   errorMsg.value = p.error ?? "";
+  if (p.phase !== "error") {
+    manualMode.value = false;
+    manualSubmitting.value = false;
+  }
   applyAppearance(p);
   if (!bgDataUrl.value) {
     await refreshBackgroundFromDisk();
@@ -175,7 +183,7 @@ async function applyPayload(p: BubblePayload) {
 
 function isButtonTarget(el: EventTarget | null) {
   if (!(el instanceof HTMLElement)) return false;
-  return !!el.closest("button, a, .top-btns");
+  return !!el.closest("button, a, .top-btns, textarea, .manual-acts");
 }
 
 async function startWindowDrag(e: MouseEvent) {
@@ -195,6 +203,39 @@ function onCloseClick(e: MouseEvent) {
 
 async function closeBubble() {
   await invoke("dismiss_bubble");
+}
+
+async function openManualInput() {
+  manualText.value = sourceText.value.trim();
+  manualMode.value = true;
+  try {
+    await invoke("prepare_bubble_manual_input");
+  } catch {
+    /* ignore resize failures */
+  }
+  requestAnimationFrame(() => {
+    manualInputRef.value?.focus();
+  });
+}
+
+async function submitManualTranslate() {
+  const text = manualText.value.trim();
+  if (!text || manualSubmitting.value) return;
+  manualSubmitting.value = true;
+  try {
+    await invoke("translate_text", { text });
+  } catch (e) {
+    errorMsg.value = typeof e === "string" ? e : "翻译失败";
+    manualMode.value = true;
+    manualSubmitting.value = false;
+  }
+}
+
+function onManualKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    void submitManualTranslate();
+  }
 }
 
 async function copyTranslation() {
@@ -321,9 +362,19 @@ onUnmounted(() => {
     </div>
 
     <div v-else class="bubble err" :style="cardStyle">
-      <div class="top-bar">
-        <span class="top-title err-t">翻译失败</span>
+      <div class="top-bar" @mousedown="startWindowDrag">
+        <span class="top-title err-t">{{ manualMode ? "手动输入" : "翻译失败" }}</span>
         <div class="top-btns" @mousedown.stop @pointerdown.stop>
+          <button
+            v-if="!manualMode"
+            type="button"
+            class="manual-btn top-manual"
+            @mousedown.stop
+            @pointerdown.stop
+            @click.stop="openManualInput"
+          >
+            手动输入
+          </button>
           <button
             type="button"
             class="ibtn"
@@ -344,7 +395,28 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
-      <p class="err-msg">{{ errorMsg }}</p>
+      <template v-if="manualMode">
+        <textarea
+          ref="manualInputRef"
+          v-model="manualText"
+          class="manual-input"
+          rows="3"
+          placeholder="输入要翻译的原文…"
+          @mousedown.stop
+          @keydown="onManualKeydown"
+        />
+        <div class="manual-acts" @mousedown.stop>
+          <button
+            type="button"
+            class="manual-btn"
+            :disabled="!manualText.trim() || manualSubmitting"
+            @click.stop="submitManualTranslate"
+          >
+            {{ manualSubmitting ? "翻译中…" : "翻译" }}
+          </button>
+        </div>
+      </template>
+      <p v-else class="err-msg">{{ errorMsg }}</p>
     </div>
   </div>
 </template>
@@ -569,9 +641,77 @@ onUnmounted(() => {
 .err-msg {
   margin: 0;
   font-size: 0.74rem;
-  line-height: 1.35;
+  line-height: 1.4;
   overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 1.4em;
+}
+
+.bubble.err {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.manual-input {
   flex: 1;
+  min-height: 52px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bubble-text, var(--text)) 6%, transparent);
+  color: var(--bubble-text, var(--text));
+  font: inherit;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  resize: none;
+  outline: none;
+}
+
+.manual-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.manual-input::placeholder {
+  color: var(--bubble-muted, var(--muted));
+}
+
+.manual-acts {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.manual-btn {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.manual-btn.top-manual {
+  height: 22px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+}
+
+.manual-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.manual-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 @keyframes spin {
